@@ -10,9 +10,11 @@
 
 | Day | Problems Solved             |
 |-----|-----------------------------|
-| 1   | TwoSum                      |
-| 2   | PalindromeCheck             |
+| 1   |  Two sum                    |
+| 2   | Unique element -1
+| 3   | Longest subarray of sum K (Brute) |
+| 4   | Longest subarray of sum k(opt)    |
 =======
 # DSA-Daily-java
-Grinding DSA problem Daily to be best
+Grinding the DSA problem daily to be the best.
 
