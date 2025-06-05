@@ -14,6 +14,7 @@
 | 2   | Unique element -1
 | 3   | Longest subarray of sum K (Brute) |
 | 4   | Longest subarray of sum k(opt)    |
+| 5   | Frequency of each element        |
 =======
 # DSA-Daily-java
 Grinding the DSA problem daily to be the best.
