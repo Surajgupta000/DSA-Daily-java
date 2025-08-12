@@ -1,0 +1,424 @@
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { User } from '../../entities/user.entity';
+import { ExpertService } from '../../expert-services/entities/expert-service.entity';
+import { Review } from '../../reviews/entities/review.entity';
+import { ExpertRanking } from '../../ranking/entities/expert-ranking.entity';
+import { Certificate } from '../../entities/certificate.entity';
+import { Education } from '../../entities/education.entity';
+import { Experience } from '../../entities/experience.entity';
+import { CombinedUserRole } from '../../enums/combined-user-role.enum';
+
+@Injectable()
+export class ExpertProfileService {
+  private readonly logger = new Logger(ExpertProfileService.name);
+
+  constructor(
+    @InjectRepository(User)
+    private userRepository: Repository<User>,
+    @InjectRepository(ExpertService)
+    private expertServiceRepository: Repository<ExpertService>,
+    @InjectRepository(Review)
+    private reviewRepository: Repository<Review>,
+    @InjectRepository(ExpertRanking)
+    private expertRankingRepository: Repository<ExpertRanking>,
+    @InjectRepository(Certificate)
+    private certificateRepository: Repository<Certificate>,
+    @InjectRepository(Education)
+    private educationRepository: Repository<Education>,
+    @InjectRepository(Experience)
+    private experienceRepository: Repository<Experience>,
+  ) {}
+
+  /**
+   * Get complete expert profile with all details
+   */
+  async getExpertProfile(expertId: string) {
+    try {
+      // Get expert user with profile
+      const expert = await this.userRepository.findOne({
+        where: {
+          id: expertId,
+          role: CombinedUserRole.EXPERT,
+        },
+        relations: ['profile'],
+      });
+
+      if (!expert) {
+        throw new NotFoundException(`Expert with ID ${expertId} not found`);
+      }
+
+      // Get expert ranking
+      const ranking = await this.expertRankingRepository.findOne({
+        where: { expertId },
+      });
+
+      // Get certificates, education, and experience with error handling
+      let certificates = [];
+      let education = [];
+      let experience = [];
+
+      try {
+        if (expert.profile) {
+          certificates = await this.certificateRepository.find({
+            where: { profile: { id: expert.profile.id } },
+          });
+        }
+      } catch (error) {
+        this.logger.warn(`Could not load certificates: ${error.message}`);
+        certificates = [];
+      }
+
+      try {
+        if (expert.profile) {
+          education = await this.educationRepository.find({
+            where: { profile: { id: expert.profile.id } },
+            order: { startDate: 'DESC' },
+          });
+        }
+      } catch (error) {
+        this.logger.warn(`Could not load education: ${error.message}`);
+        education = [];
+      }
+
+      try {
+        if (expert.profile) {
+          experience = await this.experienceRepository.find({
+            where: { profile: { id: expert.profile.id } },
+            order: { startDate: 'DESC' },
+          });
+        }
+      } catch (error) {
+        this.logger.warn(`Could not load experience: ${error.message}`);
+        experience = [];
+      }
+
+      // Get service statistics
+      const serviceStats = await this.getExpertServiceStats(expertId);
+
+      // Get review statistics
+      const reviewStats = await this.getExpertReviewStats(expertId);
+
+      return {
+        id: expert.id,
+        name: expert.fullName,
+        email: expert.email,
+        title: expert.profile?.headline || 'Expert Consultant',
+        bio: expert.profile?.bio || '',
+        profilePicture: expert.profile?.profilePicture || '',
+        location: expert.profile?.address || '',
+        languages: expert.profile?.skills || [],
+
+        // Rating and reviews
+        averageRating: ranking?.averageRating || 0,
+        totalReviews: ranking?.totalReviews || 0,
+        totalSessions: ranking?.totalCompletedSessions || 0,
+        successRate: this.calculateSuccessRate(ranking),
+        responseTime: ranking?.averageResponseTimeMinutes || 60,
+
+        // Ranking info
+        rankingTier: ranking?.tier || null,
+        rankScore: ranking?.totalScore || 0,
+
+        // Professional info
+        experience: experience.map((exp) => ({
+          id: exp.id,
+          title: exp.position,
+          company: exp.company,
+          location: exp.location,
+          startDate: exp.startDate,
+          endDate: exp.endDate,
+          description: exp.description,
+          current: exp.current,
+        })),
+
+        education: education.map((edu) => ({
+          id: edu.id,
+          degree: edu.degree,
+          institution: edu.institution,
+          field: edu.fieldOfStudy,
+          startDate: edu.startDate,
+          endDate: edu.endDate,
+          grade: edu.grade,
+        })),
+
+        certificates: certificates.map((cert) => ({
+          id: cert.id,
+          name: cert.name,
+          issuer: cert.issuingOrganization,
+          issueDate: cert.issueDate,
+          expiryDate: cert.expiryDate,
+          credentialId: cert.credentialId,
+          url: cert.credentialUrl,
+        })),
+
+        // Service statistics
+        serviceStats,
+        reviewStats,
+
+        // Metadata
+        joinedDate: expert.createdAt,
+        isOnline: true, // TODO: Implement real online status
+        verified: !!expert.emailVerifiedAt,
+        lastActive: expert.updatedAt,
+      };
+    } catch (error) {
+      this.logger.error(
+        `Error getting expert profile: ${error.message}`,
+        error.stack,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Get all services offered by an expert
+   */
+  async getExpertServices(
+    expertId: string,
+    page: number = 1,
+    limit: number = 10,
+  ) {
+    try {
+      const [services, total] = await this.expertServiceRepository.findAndCount(
+        {
+          where: { expertId },
+          order: { createdAt: 'DESC' },
+          take: limit,
+          skip: (page - 1) * limit,
+        },
+      );
+
+      const transformedServices = services.map((service) => ({
+        id: service.id,
+        title: service.title,
+        description: service.description,
+        category: service.category,
+        price: service.price,
+        currency: service.currency,
+        duration: service.durationMinutes,
+        sessionType: service.meetingType,
+        serviceType: service.serviceType,
+        isActive: service.isActive,
+        averageRating: service.averageRating,
+        reviewCount: service.ratingsCount,
+        totalBookings: service.bookingsCount,
+        createdAt: service.createdAt,
+        updatedAt: service.updatedAt,
+      }));
+
+      return {
+        services: transformedServices,
+        pagination: {
+          page,
+          limit,
+          total,
+          pages: Math.ceil(total / limit),
+        },
+      };
+    } catch (error) {
+      this.logger.error(
+        `Error getting expert services: ${error.message}`,
+        error.stack,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Get expert reviews with details
+   */
+  async getExpertReviews(
+    expertId: string,
+    page: number = 1,
+    limit: number = 10,
+  ) {
+    try {
+      const [reviews, total] = await this.reviewRepository.findAndCount({
+        where: { expertId },
+        relations: ['seeker', 'seeker.profile', 'booking'],
+        order: { createdAt: 'DESC' },
+        take: limit,
+        skip: (page - 1) * limit,
+      });
+
+      const transformedReviews = reviews.map((review) => ({
+        id: review.id,
+        rating: review.rating,
+        comment: review.content,
+        createdAt: review.createdAt,
+        reviewer: {
+          id: review.seeker.id,
+          name: review.seeker.fullName,
+          profilePicture: review.seeker.profile?.profilePicture || '',
+        },
+        booking: review.booking
+          ? {
+              id: review.booking.id,
+            }
+          : null,
+      }));
+
+      return {
+        reviews: transformedReviews,
+        pagination: {
+          page,
+          limit,
+          total,
+          pages: Math.ceil(total / limit),
+        },
+      };
+    } catch (error) {
+      this.logger.error(
+        `Error getting expert reviews: ${error.message}`,
+        error.stack,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Get expert availability (placeholder implementation)
+   */
+  async getExpertAvailability(expertId?: string, date?: string) {
+    try {
+      // TODO: Implement with actual calendar/availability system
+      return {
+        isAvailable: true,
+        nextAvailableSlot: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        availableSlots: [],
+        timezone: 'UTC',
+      };
+    } catch (error) {
+      this.logger.error(
+        `Error getting expert availability: ${error.message}`,
+        error.stack,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Track profile view for analytics
+   */
+  async trackProfileView(expertId: string, viewerId: string) {
+    try {
+      // TODO: Implement analytics tracking
+      this.logger.log(
+        `Profile view tracked: Expert ${expertId} viewed by ${viewerId}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Error tracking profile view: ${error.message}`,
+        error.stack,
+      );
+      // Don't throw error for analytics
+    }
+  }
+
+  /**
+   * Get expert service statistics
+   */
+  private async getExpertServiceStats(expertId: string) {
+    try {
+      const totalServices = await this.expertServiceRepository.count({
+        where: { expertId },
+      });
+
+      const activeServices = await this.expertServiceRepository.count({
+        where: { expertId, isActive: true },
+      });
+
+      const services = await this.expertServiceRepository.find({
+        where: { expertId },
+      });
+
+      const priceRange =
+        services.length > 0
+          ? {
+              min: Math.min(...services.map((s) => s.price)),
+              max: Math.max(...services.map((s) => s.price)),
+            }
+          : { min: 0, max: 0 };
+
+      return {
+        totalServices,
+        activeServices,
+        priceRange,
+        categories: [...new Set(services.map((s) => s.category))],
+      };
+    } catch (error) {
+      this.logger.error(
+        `Error getting service stats: ${error.message}`,
+        error.stack,
+      );
+      return {
+        totalServices: 0,
+        activeServices: 0,
+        priceRange: { min: 0, max: 0 },
+        categories: [],
+      };
+    }
+  }
+
+  /**
+   * Get expert review statistics
+   */
+  private async getExpertReviewStats(expertId: string) {
+    try {
+      const reviews = await this.reviewRepository.find({
+        where: { expertId },
+      });
+
+      if (reviews.length === 0) {
+        return {
+          totalReviews: 0,
+          averageRating: 0,
+          ratingDistribution: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
+        };
+      }
+
+      const ratingDistribution = reviews.reduce(
+        (acc, review) => {
+          acc[review.rating] = (acc[review.rating] || 0) + 1;
+          return acc;
+        },
+        { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
+      );
+
+      const averageRating =
+        reviews.reduce((sum, review) => sum + review.rating, 0) /
+        reviews.length;
+
+      return {
+        totalReviews: reviews.length,
+        averageRating: Number(averageRating.toFixed(1)),
+        ratingDistribution,
+      };
+    } catch (error) {
+      this.logger.error(
+        `Error getting review stats: ${error.message}`,
+        error.stack,
+      );
+      return {
+        totalReviews: 0,
+        averageRating: 0,
+        ratingDistribution: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
+      };
+    }
+  }
+
+  /**
+   * Calculate success rate from ranking data
+   */
+  private calculateSuccessRate(ranking: ExpertRanking | null): number {
+    if (!ranking || !ranking.totalCompletedSessions) {
+      return 0;
+    }
+
+    // Simple calculation based on completed sessions and average rating
+    const baseRate = (ranking.averageRating / 5) * 100;
+    return Math.min(Math.round(baseRate), 100);
+  }
+}
